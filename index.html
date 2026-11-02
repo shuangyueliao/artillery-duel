@@ -1,0 +1,826 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="description" content="Artillery Duel — turn-based artillery duel against the AI. Set angle and power, mind the wind, blast craters and hit the enemy turret 3 times. Free HTML5 game.">
+<title>Artillery Duel — Free Artillery Game</title>
+<script>
+// 平台 SDK 按域名条件加载（独立运行时完全不加载，游戏行为不变）
+(function () {
+  var host = location.hostname || "";
+  try {
+    if (host.indexOf("crazygames") !== -1) {
+      var s1 = document.createElement("script");
+      s1.src = "https://sdk.crazygames.com/crazygames-sdk-v3.js";
+      s1.onload = function () {
+        if (window.CrazyGames && window.CrazyGames.SDK) {
+          window.CrazyGames.SDK.init().then(function () {
+            try { window.CrazyGames.SDK.game.loadingStart(); } catch (e) {}
+            window.addEventListener("load", function () { try { window.CrazyGames.SDK.game.loadingStop(); } catch (e) {} });
+          }).catch(function () {});
+        }
+      };
+      document.head.appendChild(s1);
+      window.__portal = "crazygames";
+    } else if (host.indexOf("gamedistribution") !== -1 || host.indexOf("html5.gamedistribution.com") !== -1 || host.indexOf("gd.games") !== -1) {
+      var s2 = document.createElement("script");
+      s2.src = "https://sdk.gamedistribution.com/v2/main.min.js";
+      document.head.appendChild(s2);
+      window.__portal = "gamedistribution";
+    }
+  } catch (e) {}
+})();
+</script>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; overflow:hidden; background:#090c16; font-family:-apple-system,"Segoe UI",Arial,sans-serif; }
+  #wrap { height:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  #stage { position:relative; }
+  canvas { display:block; border-radius:10px; touch-action:none; background:#101a33; }
+  #mute { position:absolute; top:8px; right:8px; z-index:6; background:rgba(18,24,44,.82); color:#9fb4d8; border:1px solid #33405f; border-radius:8px; padding:5px 10px; font-size:11px; font-weight:700; letter-spacing:1px; cursor:pointer; }
+  #mute:active { transform:scale(.95); }
+  #overlay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(6,9,20,.78); z-index:5; }
+  #overlay.hidden { display:none; }
+  .panel { background:#141a2e; border:1px solid #2c3757; border-radius:16px; padding:22px 30px; text-align:center; color:#fff; max-width:88%; }
+  .panel h1 { font-size:24px; letter-spacing:3px; margin-bottom:6px; color:#ffd76a; }
+  .panel h2 { font-size:26px; margin-bottom:6px; letter-spacing:1px; }
+  .panel p { color:#9aa7c4; font-size:13px; margin-bottom:12px; line-height:1.55; }
+  .stats { color:#7fd18a; font-size:12px; letter-spacing:1px; margin-bottom:16px; }
+  .btnrow { display:flex; gap:12px; justify-content:center; margin-bottom:8px; }
+  .btn { background:linear-gradient(135deg,#3f6cff,#7b4bff); color:#fff; border:none; border-radius:10px; padding:12px 28px; font-size:15px; font-weight:800; cursor:pointer; letter-spacing:1px; }
+  .btn.alt { background:linear-gradient(135deg,#e2554a,#ff8a3d); }
+  .btn.ghost { background:#223055; }
+  .btn:active { transform:scale(.96); }
+  .hint { color:#5f6f92; font-size:11px; margin-top:8px; line-height:1.6; }
+  #footer { color:#4a5570; font-size:11px; padding:6px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stage">
+    <canvas id="game"></canvas>
+    <button id="mute">SOUND: ON</button>
+    <div id="overlay">
+      <div class="panel" id="menuPanel">
+        <h1>ARTILLERY DUEL</h1>
+        <p>Turn-based cannon duel. Set angle &amp; power, read the wind,<br>dig craters into the terrain and hit the enemy turret 3 times.</p>
+        <div class="stats" id="menuStats">WINS 0 &middot; GAMES 0 &middot; BEST STREAK 0</div>
+        <div class="btnrow">
+          <button class="btn" id="btnEasy">EASY</button>
+          <button class="btn alt" id="btnHard">HARD</button>
+        </div>
+        <div class="hint">Drag out from your turret and release to fire<br>or &larr; &rarr; angle &middot; &uarr; &darr; power &middot; Space fire</div>
+      </div>
+      <div class="panel" id="endPanel" style="display:none">
+        <h2 id="endTitle">VICTORY!</h2>
+        <p id="endText"></p>
+        <div class="stats" id="endStats"></div>
+        <div class="btnrow">
+          <button class="btn" id="btnRematch">REMATCH</button>
+          <button class="btn ghost" id="btnMenu">MENU</button>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="footer">Artillery Duel — a free turn-based artillery game</div>
+</div>
+<script>
+"use strict";
+// ===================== 纯逻辑引擎（无 DOM 依赖，可被 Node 抽取测试） =====================
+// __AD_ENGINE_START__
+var GW = 960, GH = 540;                 // 逻辑分辨率（16:9，横屏优先）
+var TSTEP = 4, TN = GW / TSTEP + 1;     // 地形采样点：每 4px 一个，共 241 个
+var GRAV = 300;                         // 重力加速度 px/s^2
+var WIND_ACC = 5;                       // 风力水平加速度系数：a = wind * WIND_ACC
+var POW2V = 6;                          // 初速换算：v0 = power * POW2V（power 20-100）
+var CRATER_R = 38;                      // 爆炸半径（弹坑半径 + 命中判定基础）
+var TURRET_R = 10, SHELL_R = 3;         // 炮塔本体半径 / 炮弹半径
+var HIT_R = CRATER_R + 8;               // 爆炸中心到炮塔中心 ≤ HIT_R 记一次命中
+var HITS_TO_WIN = 3;                    // 先命中 3 次获胜
+var DT_SUB = 1 / 240;                   // 物理子步长（防穿地/隧穿）
+var BARREL_LEN = 22, TURRET_CY = 10;    // 炮管长 / 炮塔中心距地面高度
+
+// 可播种 RNG（mulberry32），测试用固定种子即可复现整局
+function mulberry32(seed) {
+  var a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    var t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+function dist2(ax, ay, bx, by) { var dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
+
+// 程序化起伏地形：多层正弦叠加 + 两端高地，再在炮位处整出平台
+function genTerrain(rng) {
+  var t = new Float64Array(TN), i, x, j;
+  var L = [];
+  for (i = 0; i < 5; i++) {
+    L.push({ a: (16 + rng() * 26) / (i * 0.9 + 1), f: (2 + i * 2.3 + rng() * 1.5) * Math.PI * 2 / GW, p: rng() * Math.PI * 2 });
+  }
+  for (x = 0; x < TN; x++) {
+    var px = x * TSTEP, y = GH * 0.60;
+    for (j = 0; j < L.length; j++) y += L[j].a * Math.sin(L[j].f * px + L[j].p);
+    y -= 78 * Math.exp(-Math.pow((px - 75) / 120, 2));
+    y -= 78 * Math.exp(-Math.pow((px - (GW - 75)) / 120, 2));
+    t[x] = y;
+  }
+  flattenPad(t, 75);
+  flattenPad(t, GW - 75);
+  for (x = 0; x < TN; x++) t[x] = clamp(t[x], 150, GH - 26);
+  return t;
+}
+function flattenPad(t, cx) { // 炮位平台：中心完全取平，余弦渐变过渡到自然地形
+  var c = Math.round(cx / TSTEP), half = 16, padY = t[c];
+  for (var i = Math.max(0, c - half); i <= Math.min(TN - 1, c + half); i++) {
+    var d = Math.abs(i - c) / half;
+    var w = 0.5 + 0.5 * Math.cos(d * Math.PI);
+    w = w * w * (3 - 2 * w);
+    t[i] = t[i] * (1 - w) + padY * w;
+  }
+}
+// 地面高度（线性插值，保证连续表面）
+function groundAt(t, x) {
+  var fx = clamp(x, 0, GW) / TSTEP, i = Math.floor(fx);
+  if (i >= TN - 1) return t[TN - 1];
+  var f = fx - i;
+  return t[i] * (1 - f) + t[i + 1] * f;
+}
+// 弹坑：只向下挖深（地形高度数组永远单调变深），夹在屏幕底之内
+function carveCrater(t, cx, cy, r) {
+  var i0 = Math.max(0, Math.floor((cx - r) / TSTEP));
+  var i1 = Math.min(TN - 1, Math.ceil((cx + r) / TSTEP));
+  var changed = 0;
+  for (var i = i0; i <= i1; i++) {
+    var dx = i * TSTEP - cx;
+    var bottom = cy + Math.sqrt(Math.max(0, r * r - dx * dx));
+    if (bottom > t[i]) { t[i] = Math.min(GH - 6, bottom); changed++; }
+  }
+  return changed;
+}
+// 单个物理子步：重力 + 风力水平加速度
+function shotStep(s, dt, wind) {
+  s.vx += wind * WIND_ACC * dt;
+  s.vy += GRAV * dt;
+  s.x += s.vx * dt;
+  s.y += s.vy * dt;
+}
+function muzzleX(cx, rad, dir) { return cx + Math.cos(rad) * (BARREL_LEN + 4) * dir; }
+function muzzleY(cy, rad) { return cy - Math.sin(rad) * (BARREL_LEN + 4); }
+// 纯模拟一发炮弹（AI 搜索与玩家预览共用，与真实飞行的积分器完全一致）
+// t: 地形, cx/cy: 炮塔中心, dir: 朝向（左侧炮塔 +1 / 右侧 -1）, target: 敌方炮塔中心（可为 null），out: 轨迹点收集数组（可为 null）
+function simulateShot(t, cx, cy, angleDeg, power, wind, target, out, dir) {
+  var rad = angleDeg * Math.PI / 180, v = power * POW2V;
+  var s = { x: muzzleX(cx, rad, dir), y: muzzleY(cy, rad), vx: Math.cos(rad) * v * dir, vy: -Math.sin(rad) * v };
+  var time = 0, result = "timeout", i, steps = Math.ceil(14 / DT_SUB);
+  var rr = (TURRET_R + SHELL_R) * (TURRET_R + SHELL_R);
+  for (i = 0; i < steps; i++) {
+    shotStep(s, DT_SUB, wind);
+    time += DT_SUB;
+    if (out && i % 5 === 0) out.push({ x: s.x, y: s.y, t: time });
+    if (target && dist2(s.x, s.y, target.x, target.y) < rr) { result = "hit"; break; }
+    if (s.y >= groundAt(t, s.x)) { result = "ground"; break; }
+    if (s.x < -40 || s.x > GW + 40 || s.y > GH + 60) { result = "out"; break; }
+  }
+  return { x: s.x, y: s.y, result: result, time: time };
+}
+// AI 选弹：粗扫描全空间 → Hard 再迭代逼近（模拟自带风力，等于风力补偿），Easy 直接加大误差
+function aiChooseShot(t, cx, cy, target, wind, diff, rng, dir) {
+  function scoreOf(s) {
+    if (s.result === "hit") return 0;
+    if (s.result === "out") return 1e6;
+    return Math.sqrt(dist2(s.x, s.y, target.x, target.y));
+  }
+  var bestA = 45, bestP = 60, bestScore = 1e9, a, p, s, sc;
+  for (a = 15; a <= 80; a += 5) {
+    for (p = 25; p <= 100; p += 5) {
+      s = simulateShot(t, cx, cy, a, p, wind, target, null, dir);
+      sc = scoreOf(s);
+      if (sc < bestScore) { bestScore = sc; bestA = a; bestP = p; }
+    }
+  }
+  if (diff === "hard") {
+    // 迭代逼近（爬山法），两轮步长 4 → 1
+    var step = 4, round;
+    for (round = 0; round < 2; round++) {
+      var guard = 0, improved = true;
+      while (improved && guard++ < 10) {
+        improved = false;
+        var cand = [[bestA + step, bestP], [bestA - step, bestP], [bestA, bestP + step], [bestA, bestP - step],
+                    [bestA + step, bestP + step], [bestA - step, bestP - step], [bestA + step, bestP - step], [bestA - step, bestP + step]];
+        for (var c = 0; c < cand.length; c++) {
+          var ca = clamp(cand[c][0], 5, 88), cp = clamp(cand[c][1], 20, 100);
+          s = simulateShot(t, cx, cy, ca, cp, wind, target, null, dir);
+          sc = scoreOf(s);
+          if (sc < bestScore - 0.01) { bestScore = sc; bestA = ca; bestP = cp; improved = true; }
+        }
+      }
+      step = 1;
+    }
+    // 15% 失误率：故意打歪
+    if (rng() < 0.15) {
+      bestA = clamp(bestA + (rng() < 0.5 ? -1 : 1) * (8 + rng() * 12), 5, 88);
+      bestP = clamp(bestP + (rng() * 2 - 1) * 14, 20, 100);
+    }
+  } else {
+    // Easy：粗扫描结果上叠加大幅随机误差
+    bestA = clamp(bestA + (rng() * 2 - 1) * 14, 5, 88);
+    bestP = clamp(bestP + (rng() * 2 - 1) * 18, 20, 100);
+  }
+  return { angle: bestA, power: bestP };
+}
+// 炮塔随下方地形塌陷下滑（地面只降不升，重落到新地面为止）
+function settleTurret(tu, t, dt) {
+  var g = groundAt(t, tu.x);
+  if (tu.y < g - 0.5) {
+    tu.vy += GRAV * dt;
+    tu.y = Math.min(g, tu.y + tu.vy * dt);
+    if (tu.y >= g) { tu.vy = 0; tu.y = g; }
+  } else { tu.y = g; tu.vy = 0; }
+}
+// __AD_ENGINE_END__
+
+// ===================== DOM / 状态 =====================
+var canvas = document.getElementById("game");
+var ctx = canvas.getContext("2d");
+var dpr = Math.min(window.devicePixelRatio || 1, 2);
+canvas.width = GW * dpr; canvas.height = GH * dpr;
+
+var state = "menu";      // menu | aim | aithink | fly | resolve | over
+var diff = "easy";
+var terrain = null;
+var tur = [
+  { x: 75, y: 0, vy: 0, angle: 45, power: 60, flash: 0, dir: 1 },
+  { x: GW - 75, y: 0, vy: 0, angle: 45, power: 60, flash: 0, dir: -1 }
+];
+var hits = [0, 0];       // hits[0]=玩家得分, hits[1]=AI 得分
+var turn = 0, wind = 0, winner = -1;
+var shell = null, trail = [], acc = 0, shotCount = 0;
+var aiPlan = null, thinkT = 0, resolveT = 0;
+var particles = [], shake = 0, firedThisMatch = false;
+var recoil = [0, 0];
+var stats = { w: 0, g: 0, s: 0, bs: 0 };
+var muted = false;
+var rng = mulberry32(20261025);
+var dragging = false, dragDist = 0;
+try { stats = JSON.parse(localStorage.getItem("ad_stats_v1")) || stats; } catch (e) {}
+try { muted = localStorage.getItem("ad_muted") === "1"; } catch (e) {}
+
+var stars = [];
+for (var si = 0; si < 46; si++) stars.push({ x: Math.random() * GW, y: Math.random() * GH * 0.45, r: 0.6 + Math.random() * 1.3, a: 0.25 + Math.random() * 0.6 });
+
+function $(id) { return document.getElementById(id); }
+function turretCenter(i) { return { x: tur[i].x, y: tur[i].y - TURRET_CY }; }
+function rollWind() { return Math.floor(rng() * 21) - 10; } // -10 .. 10
+
+function placeTurrets() {
+  tur[0].x = 75; tur[1].x = GW - 75;
+  tur[0].dir = 1; tur[1].dir = -1;
+  for (var i = 0; i < 2; i++) { tur[i].y = groundAt(terrain, tur[i].x); tur[i].vy = 0; tur[i].flash = 0; }
+}
+function newGame(d, seed) {
+  diff = d || "easy";
+  rng = mulberry32(seed == null ? ((Date.now() ^ (Math.random() * 0xffffffff)) | 0) : seed);
+  terrain = genTerrain(rng);
+  placeTurrets();
+  hits = [0, 0]; turn = 0; winner = -1; shell = null; trail = []; particles = []; shake = 0;
+  firedThisMatch = false; aiPlan = null; shotCount = 0;
+  tur[0].angle = 45; tur[0].power = 60;
+  wind = rollWind();
+  state = "aim";
+  $("overlay").classList.add("hidden");
+}
+function showMenu() {
+  state = "menu";
+  $("menuStats").innerHTML = "WINS " + stats.w + " &middot; GAMES " + stats.g + " &middot; BEST STREAK " + stats.bs;
+  $("menuPanel").style.display = "block";
+  $("endPanel").style.display = "none";
+  $("overlay").classList.remove("hidden");
+}
+function showEnd(win) {
+  $("endTitle").textContent = win ? "VICTORY!" : "DEFEAT";
+  $("endTitle").style.color = win ? "#7fd18a" : "#ff7b6b";
+  $("endText").textContent = win
+    ? "You scored " + HITS_TO_WIN + " hits. The enemy turret is scrap metal."
+    : "The AI scored " + HITS_TO_WIN + " hits. Your turret is gone.";
+  $("endStats").innerHTML = "WINS " + stats.w + " &middot; GAMES " + stats.g + " &middot; STREAK " + stats.s + " &middot; BEST " + stats.bs;
+  $("menuPanel").style.display = "none";
+  $("endPanel").style.display = "block";
+  $("overlay").classList.remove("hidden");
+}
+
+// ===================== 平台埋点（SDK 已由 loader 做域名守卫） =====================
+function cgStart() {
+  try {
+    if (window.__portal === "crazygames" && window.CrazyGames && window.CrazyGames.SDK) {
+      window.CrazyGames.SDK.game.gameplayStart();
+    }
+  } catch (e) {}
+}
+function cgStop(win) {
+  try {
+    if (window.__portal === "crazygames" && window.CrazyGames && window.CrazyGames.SDK) {
+      window.CrazyGames.SDK.game.gameplayStop();
+      if (win) window.CrazyGames.SDK.game.happytime();
+    }
+  } catch (e) {}
+}
+
+// ===================== 音效（WebAudio 合成，无外部资源） =====================
+var actx = null;
+function ensureAudio() {
+  try {
+    if (!actx) { var AC = window.AudioContext || window.webkitAudioContext; if (AC) actx = new AC(); }
+    if (actx && actx.state === "suspended") actx.resume();
+  } catch (e) {}
+}
+function beep(freq, dur, type, gainv, sweepTo, delay) {
+  try {
+    if (muted) return;
+    ensureAudio(); if (!actx) return;
+    var t0 = actx.currentTime + (delay || 0);
+    var o = actx.createOscillator(), g = actx.createGain();
+    o.type = type || "sine";
+    o.frequency.setValueAtTime(freq, t0);
+    if (sweepTo) o.frequency.exponentialRampToValueAtTime(Math.max(30, sweepTo), t0 + dur);
+    g.gain.setValueAtTime(gainv || 0.1, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    o.connect(g); g.connect(actx.destination);
+    o.start(t0); o.stop(t0 + dur);
+  } catch (e) {}
+}
+function noiseBurst(dur, gainv, cutoff) { // 爆炸用噪声缓冲
+  try {
+    if (muted) return;
+    ensureAudio(); if (!actx) return;
+    var n = Math.floor(actx.sampleRate * dur);
+    var buf = actx.createBuffer(1, n, actx.sampleRate);
+    var d = buf.getChannelData(0);
+    for (var i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 2);
+    var src = actx.createBufferSource(); src.buffer = buf;
+    var f = actx.createBiquadFilter(); f.type = "lowpass"; f.frequency.value = cutoff || 900;
+    var g = actx.createGain(); g.gain.value = gainv || 0.25;
+    src.connect(f); f.connect(g); g.connect(actx.destination);
+    src.start();
+  } catch (e) {}
+}
+var whistle = null;
+function startWhistle() { // 炮弹飞行啸声：升调正弦
+  try {
+    if (muted) return;
+    ensureAudio(); if (!actx) return;
+    stopWhistle();
+    var o = actx.createOscillator(), g = actx.createGain();
+    o.type = "sine";
+    o.frequency.setValueAtTime(500, actx.currentTime);
+    o.frequency.linearRampToValueAtTime(1250, actx.currentTime + 1.9);
+    g.gain.setValueAtTime(0.0001, actx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.03, actx.currentTime + 0.08);
+    o.connect(g); g.connect(actx.destination);
+    o.start();
+    whistle = { o: o, g: g };
+  } catch (e) {}
+}
+function stopWhistle() {
+  try { if (whistle) { whistle.g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + 0.05); whistle.o.stop(actx.currentTime + 0.08); } } catch (e) {}
+  whistle = null;
+}
+function sfxFire() { beep(150, 0.28, "square", 0.16, 55); noiseBurst(0.15, 0.1, 1600); }
+function sfxBoom(big) { noiseBurst(big ? 0.7 : 0.45, big ? 0.34 : 0.24, 750); beep(58, 0.5, "sine", 0.3, 28); }
+function sfxHit() { beep(880, 0.1, "square", 0.12); beep(1174, 0.14, "square", 0.12, 0, 0.1); beep(1568, 0.2, "square", 0.12, 0, 0.2); }
+function sfxFizzle() { beep(220, 0.2, "sine", 0.06, 120); }
+function sfxWin() { beep(523, 0.14, "triangle", 0.14); beep(659, 0.14, "triangle", 0.14, 0, 0.14); beep(784, 0.14, "triangle", 0.14, 0, 0.28); beep(1046, 0.3, "triangle", 0.16, 0, 0.42); }
+function sfxLose() { beep(330, 0.25, "sawtooth", 0.1); beep(220, 0.4, "sawtooth", 0.1, 0, 0.22); }
+function sfxClick() { beep(620, 0.05, "square", 0.06); }
+
+// ===================== 流程 =====================
+function fire(side, angle, power) {
+  var tu = tur[side];
+  tu.angle = angle; tu.power = power;
+  var rad = angle * Math.PI / 180, v = power * POW2V, dir = tu.dir || 1;
+  var cx = tu.x, cy = tu.y - TURRET_CY;
+  shell = { x: muzzleX(cx, rad, dir), y: muzzleY(cy, rad), vx: Math.cos(rad) * v * dir, vy: -Math.sin(rad) * v, owner: side, t: 0 };
+  trail = []; acc = 0; shotCount++;
+  recoil[side] = 1;
+  // 炮口火光
+  for (var i = 0; i < 6; i++) {
+    particles.push({ x: shell.x, y: shell.y, vx: Math.cos(rad) * dir * (40 + Math.random() * 90) + (Math.random() - 0.5) * 40, vy: -Math.sin(rad) * (40 + Math.random() * 90) + (Math.random() - 0.5) * 40, life: 0.18 + Math.random() * 0.12, max: 0.3, g: 60, c: "#ffd76a", s: 2 + Math.random() * 2 });
+  }
+  state = "fly";
+  sfxFire(); startWhistle();
+  if (!firedThisMatch) { firedThisMatch = true; cgStart(); }
+}
+function explode(x, y, inBounds) {
+  stopWhistle();
+  var scored = false;
+  if (inBounds) {
+    carveCrater(terrain, x, y, CRATER_R);
+    shake = 12;
+    // 火焰 / 尘土 / 烟
+    for (var f = 0; f < 16; f++) {
+      var a = Math.random() * Math.PI * 2, sp = 60 + Math.random() * 200;
+      particles.push({ x: x, y: y, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 60, life: 0.3 + Math.random() * 0.25, max: 0.55, g: 260, c: f % 2 ? "#ffb347" : "#ff6b3d", s: 2 + Math.random() * 3.5 });
+    }
+    for (var d = 0; d < 22; d++) {
+      a = Math.random() * Math.PI; sp = 40 + Math.random() * 150;
+      particles.push({ x: x, y: y, vx: Math.cos(a) * sp * (Math.random() < 0.5 ? -1 : 1), vy: -Math.abs(Math.sin(a)) * sp, life: 0.6 + Math.random() * 0.5, max: 1.1, g: 220, c: "#8a6f4d", s: 2 + Math.random() * 3 });
+    }
+    for (var m = 0; m < 8; m++) {
+      particles.push({ x: x + (Math.random() - 0.5) * 20, y: y - 4, vx: (Math.random() - 0.5) * 30, vy: -30 - Math.random() * 40, life: 0.9 + Math.random() * 0.6, max: 1.5, g: -20, c: "#6a6f7a", s: 4 + Math.random() * 5 });
+    }
+    sfxBoom(true);
+  } else {
+    sfxFizzle();
+  }
+  for (var i = 0; i < 2; i++) {
+    var cy = tur[i].y - TURRET_CY;
+    if (inBounds && dist2(x, y, tur[i].x, cy) <= HIT_R * HIT_R) {
+      hits[1 - i]++;
+      tur[i].flash = 1;
+      scored = true;
+      for (var k = 0; k < 14; k++) {
+        var a2 = Math.random() * Math.PI * 2, sp2 = 80 + Math.random() * 160;
+        particles.push({ x: tur[i].x, y: cy, vx: Math.cos(a2) * sp2, vy: Math.sin(a2) * sp2 - 40, life: 0.4 + Math.random() * 0.3, max: 0.7, g: 240, c: k % 2 ? "#ffffff" : "#9fd0ff", s: 1.5 + Math.random() * 2.5 });
+      }
+    }
+  }
+  shell = null;
+  if (hits[0] >= HITS_TO_WIN) winner = 0;
+  else if (hits[1] >= HITS_TO_WIN) winner = 1;
+  state = "resolve";
+  resolveT = scored ? 1.25 : (inBounds ? 0.85 : 0.45);
+  if (scored) sfxHit();
+}
+function afterResolve() {
+  if (winner >= 0) { finishMatch(); return; }
+  turn = 1 - turn;
+  wind = rollWind();
+  if (turn === 1) {
+    var tc = turretCenter(0);
+    aiPlan = aiChooseShot(terrain, tur[1].x, tur[1].y - TURRET_CY, tc, wind, diff, rng, tur[1].dir);
+    thinkT = 0.75;
+    state = "aithink";
+  } else {
+    state = "aim";
+  }
+}
+function finishMatch() {
+  state = "over";
+  stats.g++;
+  if (winner === 0) { stats.w++; stats.s++; if (stats.s > stats.bs) stats.bs = stats.s; }
+  else stats.s = 0;
+  try { localStorage.setItem("ad_stats_v1", JSON.stringify(stats)); } catch (e) {}
+  showEnd(winner === 0);
+  cgStop(winner === 0);
+  if (winner === 0) sfxWin(); else sfxLose();
+}
+
+// ===================== 更新 =====================
+function update(dt) {
+  var i;
+  if (terrain) { settleTurret(tur[0], terrain, dt); settleTurret(tur[1], terrain, dt); }
+  recoil[0] = Math.max(0, recoil[0] - dt * 4);
+  recoil[1] = Math.max(0, recoil[1] - dt * 4);
+  tur[0].flash = Math.max(0, tur[0].flash - dt * 2);
+  tur[1].flash = Math.max(0, tur[1].flash - dt * 2);
+  shake = Math.max(0, shake - dt * 26);
+  for (i = particles.length - 1; i >= 0; i--) {
+    var p = particles[i];
+    p.life -= dt;
+    if (p.life <= 0) { particles.splice(i, 1); continue; }
+    p.x += p.vx * dt; p.y += p.vy * dt; p.vy += p.g * dt;
+  }
+  if (state === "aithink") {
+    thinkT -= dt;
+    // 炮管缓缓转到目标角度
+    var da = aiPlan.angle - tur[1].angle;
+    tur[1].angle += clamp(da, -110 * dt, 110 * dt);
+    if (thinkT <= 0) fire(1, aiPlan.angle, aiPlan.power);
+  } else if (state === "fly" && shell) {
+    // 固定子步长积分，与 AI 模拟完全一致
+    acc += dt;
+    while (acc >= DT_SUB && state === "fly") {
+      acc -= DT_SUB;
+      shotStep(shell, DT_SUB, wind);
+      shell.t += DT_SUB;
+      trail.push({ x: shell.x, y: shell.y });
+      if (trail.length > 16) trail.shift();
+      var hitT = false;
+      for (i = 0; i < 2; i++) {
+        if (i === shell.owner && shell.t < 0.25) continue; // 出膛瞬间不判自己
+        var cy = tur[i].y - TURRET_CY;
+        if (dist2(shell.x, shell.y, tur[i].x, cy) < (TURRET_R + SHELL_R) * (TURRET_R + SHELL_R)) { hitT = true; break; }
+      }
+      if (hitT) { explode(shell.x, shell.y, true); break; }
+      if (shell.y >= groundAt(terrain, shell.x)) { explode(shell.x, shell.y, true); break; }
+      if (shell.x < -40 || shell.x > GW + 40 || shell.y > GH + 60) { explode(shell.x, shell.y, false); break; }
+    }
+  } else if (state === "resolve") {
+    resolveT -= dt;
+    if (resolveT <= 0) afterResolve();
+  }
+}
+
+// ===================== 渲染 =====================
+function drawTurret(i, color, dark) {
+  var tu = tur[i], cx = tu.x, cy = tu.y - TURRET_CY;
+  var rec = recoil[i] * 6;
+  var rad = tu.angle * Math.PI / 180, dir = tu.dir || 1;
+  // 履带底座
+  ctx.fillStyle = dark;
+  ctx.beginPath();
+  ctx.moveTo(cx - 15, tu.y); ctx.lineTo(cx + 15, tu.y);
+  ctx.lineTo(cx + 11, tu.y - 7); ctx.lineTo(cx - 11, tu.y - 7);
+  ctx.closePath(); ctx.fill();
+  // 车轮
+  ctx.fillStyle = "#20283c";
+  ctx.beginPath(); ctx.arc(cx - 7, tu.y - 3, 3, 0, Math.PI * 2); ctx.arc(cx + 7, tu.y - 3, 3, 0, Math.PI * 2); ctx.fill();
+  // 炮管
+  ctx.strokeStyle = "#cfd8ea";
+  ctx.lineWidth = 5; ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(cx + Math.cos(rad) * 4 * dir, cy + 4 - Math.sin(rad) * 4);
+  ctx.lineTo(cx + Math.cos(rad) * Math.max(6, BARREL_LEN - rec) * dir, cy + 4 - Math.sin(rad) * Math.max(6, BARREL_LEN - rec));
+  ctx.stroke();
+  // 炮塔圆顶
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.arc(cx, cy + 4, TURRET_R, Math.PI, 0); ctx.fill();
+  ctx.fillRect(cx - TURRET_R, cy + 3, TURRET_R * 2, 4);
+  // 受击闪白
+  if (tu.flash > 0) {
+    ctx.globalAlpha = tu.flash;
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.arc(cx, cy, TURRET_R + 6, 0, Math.PI * 2); ctx.fill();
+    ctx.globalAlpha = 1;
+  }
+  // 顶部受损指示（实心 = 该炮塔已被命中次数）
+  var dmg = hits[1 - i];
+  for (var k = 0; k < HITS_TO_WIN; k++) {
+    ctx.beginPath();
+    ctx.arc(cx - 12 + k * 12, cy - 20, 3.4, 0, Math.PI * 2);
+    if (k < dmg) { ctx.fillStyle = "#ff5d4d"; ctx.fill(); }
+    else { ctx.strokeStyle = "rgba(255,255,255,.45)"; ctx.lineWidth = 1.2; ctx.stroke(); }
+  }
+}
+function drawPreview() { // 只画前 1/3 段预测虚线（完整弹道不外泄）
+  var tc = turretCenter(0);
+  var pts = [];
+  simulateShot(terrain, tc.x, tc.y, tur[0].angle, tur[0].power, wind, null, pts, tur[0].dir);
+  var total = pts.length ? pts[pts.length - 1].t : 0;
+  if (!total) return;
+  var limit = total / 3;
+  ctx.fillStyle = "rgba(255,255,255,.85)";
+  for (var i = 0; i < pts.length; i++) {
+    if (pts[i].t > limit) break;
+    ctx.globalAlpha = 0.9 - pts[i].t / limit * 0.6;
+    ctx.beginPath(); ctx.arc(pts[i].x, pts[i].y, 2, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+function drawHUD() {
+  // 顶栏
+  ctx.fillStyle = "rgba(8,12,24,.72)";
+  ctx.fillRect(0, 0, GW, 34);
+  ctx.font = "800 13px Arial, sans-serif";
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#58a6ff";
+  ctx.fillText("YOU", 14, 18);
+  drawPips(58, 18, hits[0], "#58a6ff");
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#ff6b57";
+  ctx.fillText("AI", GW - 14, 18);
+  drawPips(GW - 100, 18, hits[1], "#ff6b57");
+  // 中央风力
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#9aa7c4";
+  ctx.font = "700 11px Arial, sans-serif";
+  ctx.fillText("WIND", GW / 2 - 26, 12);
+  ctx.fillStyle = "#ffd76a";
+  ctx.font = "800 14px Arial, sans-serif";
+  ctx.fillText(Math.abs(wind) + "", GW / 2 + 22, 18);
+  var n = Math.min(4, Math.ceil(Math.abs(wind) / 3));
+  ctx.fillStyle = "#ffd76a";
+  for (var wv = 0; wv < n; wv++) {
+    var dir = wind < 0 ? -1 : 1;
+    drawChevron(GW / 2 - 8 + dir * (wv * 7), 16, dir);
+  }
+  // 底栏
+  ctx.fillStyle = "rgba(8,12,24,.72)";
+  ctx.fillRect(0, GH - 26, GW, 26);
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#cfd8ea";
+  ctx.font = "800 12px Arial, sans-serif";
+  var aShow = turn === 0 ? tur[0].angle : (aiPlan ? aiPlan.angle : tur[1].angle);
+  var pShow = turn === 0 ? tur[0].power : (aiPlan ? aiPlan.power : tur[1].power);
+  if (state === "aim") { aShow = tur[0].angle; pShow = tur[0].power; }
+  ctx.fillText("ANGLE " + Math.round(aShow) + "\u00B0   POWER " + Math.round(pShow), 14, GH - 13);
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#5f6f92";
+  ctx.font = "700 11px Arial, sans-serif";
+  ctx.fillText("WINS " + stats.w + "  GAMES " + stats.g + "  STREAK " + stats.s, GW - 14, GH - 13);
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#ffd76a";
+  ctx.font = "800 12px Arial, sans-serif";
+  var msg = "";
+  if (state === "aim") msg = "YOUR TURN";
+  else if (state === "aithink") msg = "ENEMY TURN...";
+  else if (state === "menu") msg = "";
+  if (msg) ctx.fillText(msg, GW / 2, GH - 13);
+}
+function drawPips(x, y, n, color) {
+  for (var i = 0; i < HITS_TO_WIN; i++) {
+    ctx.beginPath();
+    ctx.arc(x + i * 14, y, 5, 0, Math.PI * 2);
+    if (i < n) { ctx.fillStyle = color; ctx.fill(); }
+    else { ctx.strokeStyle = "rgba(255,255,255,.35)"; ctx.lineWidth = 1.4; ctx.stroke(); }
+  }
+}
+function drawChevron(x, y, dir) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - 5); ctx.lineTo(x + dir * 5, y); ctx.lineTo(x, y + 5);
+  ctx.strokeStyle = "#ffd76a"; ctx.lineWidth = 2.2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  ctx.stroke();
+}
+function draw() {
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // 天空
+  var sky = ctx.createLinearGradient(0, 0, 0, GH);
+  sky.addColorStop(0, "#0d1630"); sky.addColorStop(0.55, "#33305c");
+  sky.addColorStop(0.8, "#8a4a52"); sky.addColorStop(1, "#c97a4a");
+  ctx.fillStyle = sky; ctx.fillRect(0, 0, GW, GH);
+  // 星星与月亮
+  for (var s = 0; s < stars.length; s++) {
+    ctx.globalAlpha = stars[s].a;
+    ctx.fillStyle = "#e8eeff";
+    ctx.fillRect(stars[s].x, stars[s].y, stars[s].r, stars[s].r);
+  }
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = "#f4ead8";
+  ctx.beginPath(); ctx.arc(GW * 0.72, 84, 26, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = "rgba(13,22,48,.35)";
+  ctx.beginPath(); ctx.arc(GW * 0.72 - 9, 78, 6, 0, Math.PI * 2); ctx.arc(GW * 0.72 + 7, 92, 4, 0, Math.PI * 2); ctx.fill();
+  if (!terrain) return;
+  ctx.save();
+  if (shake > 0.2) ctx.translate((Math.random() * 2 - 1) * shake * 0.6, (Math.random() * 2 - 1) * shake * 0.6);
+  // 地形
+  ctx.beginPath();
+  ctx.moveTo(0, GH);
+  for (var i = 0; i < TN; i++) ctx.lineTo(i * TSTEP, terrain[i]);
+  ctx.lineTo(GW, GH);
+  ctx.closePath();
+  var gr = ctx.createLinearGradient(0, GH * 0.35, 0, GH);
+  gr.addColorStop(0, "#3f5f3a"); gr.addColorStop(1, "#1a271c");
+  ctx.fillStyle = gr; ctx.fill();
+  ctx.beginPath();
+  for (i = 0; i < TN; i++) { if (i) ctx.lineTo(i * TSTEP, terrain[i]); else ctx.moveTo(0, terrain[i]); }
+  ctx.strokeStyle = "#7fae6a"; ctx.lineWidth = 2; ctx.stroke();
+  // 瞄准预测（前 1/3）
+  if (state === "aim") drawPreview();
+  // 炮塔
+  drawTurret(0, "#58a6ff", "#26324e");
+  drawTurret(1, "#ff6b57", "#43232c");
+  // 炮弹与拖尾
+  if (shell) {
+    for (var tr = 0; tr < trail.length; tr++) {
+      ctx.globalAlpha = tr / trail.length * 0.5;
+      ctx.fillStyle = "#ffd76a";
+      ctx.beginPath(); ctx.arc(trail[tr].x, trail[tr].y, 2, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.shadowColor = "#ffd76a"; ctx.shadowBlur = 10;
+    ctx.fillStyle = "#fff2c8";
+    ctx.beginPath(); ctx.arc(shell.x, shell.y, 3.4, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+  // 粒子
+  for (var p = 0; p < particles.length; p++) {
+    var pt = particles[p];
+    ctx.globalAlpha = Math.max(0, pt.life / pt.max);
+    ctx.fillStyle = pt.c;
+    ctx.fillRect(pt.x - pt.s / 2, pt.y - pt.s / 2, pt.s, pt.s);
+  }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  drawHUD();
+  if (window.innerHeight > window.innerWidth * 1.25) {
+    ctx.fillStyle = "rgba(255,255,255,.55)";
+    ctx.font = "700 12px Arial, sans-serif"; ctx.textAlign = "center";
+    ctx.fillText("Rotate device for the best experience", GW / 2, 52);
+  }
+}
+
+// ===================== 主循环 =====================
+var last = 0;
+function frame(t) {
+  var dt = Math.min((t - last) / 1000, 0.05);
+  last = t;
+  update(dt);
+  draw();
+  requestAnimationFrame(frame);
+}
+
+// ===================== 输入 =====================
+function eventPos(e) {
+  var rect = canvas.getBoundingClientRect();
+  var cx = (e.clientX != null ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : 0));
+  var cy = (e.clientY != null ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : 0));
+  return { x: (cx - rect.left) / rect.width * GW, y: (cy - rect.top) / rect.height * GH };
+}
+function updateAim(pos) { // 从炮塔拖出：方向定角度，距离定力度
+  var tc = turretCenter(0);
+  var dx = pos.x - tc.x, dy = tc.y - pos.y;
+  var d = Math.sqrt(dx * dx + dy * dy);
+  dragDist = d;
+  var ang = Math.atan2(Math.max(dy, 0.01), dx) * 180 / Math.PI;
+  tur[0].angle = clamp(ang, 0, 90);
+  tur[0].power = clamp(d / 4.5, 20, 100);
+}
+canvas.addEventListener("mousedown", function (e) { ensureAudio(); if (state === "aim") { dragging = true; updateAim(eventPos(e)); } });
+canvas.addEventListener("mousemove", function (e) { if (dragging && state === "aim") updateAim(eventPos(e)); });
+window.addEventListener("mouseup", function () {
+  if (dragging && state === "aim") { if (dragDist >= 18) fire(0, tur[0].angle, tur[0].power); }
+  dragging = false;
+});
+canvas.addEventListener("touchstart", function (e) { e.preventDefault(); ensureAudio(); if (state === "aim") { dragging = true; updateAim(eventPos(e)); } }, { passive: false });
+canvas.addEventListener("touchmove", function (e) { e.preventDefault(); if (dragging && state === "aim") updateAim(eventPos(e)); }, { passive: false });
+canvas.addEventListener("touchend", function (e) {
+  e.preventDefault();
+  if (dragging && state === "aim") { if (dragDist >= 18) fire(0, tur[0].angle, tur[0].power); }
+  dragging = false;
+}, { passive: false });
+canvas.addEventListener("contextmenu", function (e) { e.preventDefault(); });
+
+document.addEventListener("keydown", function (e) {
+  if (e.key === "ArrowLeft") { e.preventDefault(); if (state === "aim") tur[0].angle = clamp(tur[0].angle - 1, 0, 90); }
+  else if (e.key === "ArrowRight") { e.preventDefault(); if (state === "aim") tur[0].angle = clamp(tur[0].angle + 1, 0, 90); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); if (state === "aim") tur[0].power = clamp(tur[0].power + 1, 20, 100); }
+  else if (e.key === "ArrowDown") { e.preventDefault(); if (state === "aim") tur[0].power = clamp(tur[0].power - 1, 20, 100); }
+  else if (e.key === " ") {
+    e.preventDefault();
+    if (state === "aim") { ensureAudio(); fire(0, tur[0].angle, tur[0].power); }
+    else if (state === "over") { newGame(diff); }
+  }
+  else if (e.key === "Enter" && state === "over") { newGame(diff); }
+  else if (e.key === "m" || e.key === "M") { toggleMute(); }
+});
+
+$("btnEasy").addEventListener("click", function () { sfxClick(); newGame("easy"); });
+$("btnHard").addEventListener("click", function () { sfxClick(); newGame("hard"); });
+$("btnRematch").addEventListener("click", function () { sfxClick(); newGame(diff); });
+$("btnMenu").addEventListener("click", function () { sfxClick(); showMenu(); });
+function toggleMute() {
+  muted = !muted;
+  try { localStorage.setItem("ad_muted", muted ? "1" : "0"); } catch (e) {}
+  $("mute").textContent = muted ? "SOUND: OFF" : "SOUND: ON";
+  if (!muted) sfxClick();
+}
+$("mute").addEventListener("click", function (e) { e.stopPropagation(); toggleMute(); });
+if (muted) $("mute").textContent = "SOUND: OFF";
+
+// ===================== 自适应 =====================
+function fit() {
+  var availW = window.innerWidth - 10;
+  var availH = window.innerHeight - 44; // 留出 footer
+  var sc = Math.min(availW / GW, availH / GH, 1.5);
+  canvas.style.width = Math.max(120, Math.floor(GW * sc)) + "px";
+  canvas.style.height = Math.max(80, Math.floor(GH * sc)) + "px";
+}
+window.addEventListener("resize", fit);
+window.addEventListener("orientationchange", fit);
+
+// ===================== 启动 =====================
+terrain = genTerrain(rng);
+placeTurrets();
+fit();
+showMenu();
+requestAnimationFrame(frame);
+
+// 调试/测试钩子（不影响游戏逻辑，供 Node 无头对局模拟使用）
+window.__ad = {
+  newGame: newGame,
+  // 测试钩子：让当前回合（含玩家侧）立即用 AI 打一发
+  aiPlayCurrent: function (useDiff) {
+    if (state !== "aim") return false;
+    var tc = turretCenter(1);
+    var plan = aiChooseShot(terrain, tur[0].x, tur[0].y - TURRET_CY, tc, wind, useDiff || "hard", rng, tur[0].dir);
+    fire(0, plan.angle, plan.power);
+    return true;
+  },
+  step: function (dt) { update(dt); },
+  get state() { return state; },
+  get turn() { return turn; },
+  get hits() { return hits.slice(); },
+  get winner() { return winner; },
+  get wind() { return wind; },
+  get terrain() { return terrain; },
+  get turrets() { return [{ x: tur[0].x, y: tur[0].y }, { x: tur[1].x, y: tur[1].y }]; },
+  get shots() { return shotCount; },
+  consts: { TN: TN, GW: GW, GH: GH, DT_SUB: DT_SUB }
+};
+</script>
+</body>
+</html>
